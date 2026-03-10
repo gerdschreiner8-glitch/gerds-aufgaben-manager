@@ -285,6 +285,19 @@ const importFromGoogle = async () => {
               createdAt: Date.now(),
               googleTaskId: gt.id
             };
+              // --- Autopilot: Holt Aufgaben beim Start und alle 5 Minuten ---
+  useEffect(() => {
+    if (isGoogleLoggedIn) {
+      importFromGoogle(); // Einmal sofort abrufen beim Start
+      
+      // Und dann alle 5 Minuten (300.000 Millisekunden) still im Hintergrund
+      const intervalId = setInterval(() => {
+        importFromGoogle();
+      }, 300000);
+      
+      return () => clearInterval(intervalId);
+    }
+  }, [isGoogleLoggedIn]);
             newTasks.push(newTask);
             
             // Sofort in deiner Cloud speichern
