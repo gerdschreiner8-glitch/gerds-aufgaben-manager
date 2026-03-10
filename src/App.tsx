@@ -256,7 +256,57 @@ export default function App() {
       tokenClient.current.requestAccessToken({prompt: ''});
     }
   };
+const importFromGoogle = async () => {
+    if (!window.gapi) return;
+    addToast('info', 'Suche nach neuen Aufgaben bei Google...');
+    try {
+      const res = await window.gapi.client.tasks.tasks.list({
+        tasklist: 'DEINE_LANGE_ID_HIER_EINTRAGEN', // <--- WICHTIG: Hier wieder deine kopierte ID eintragen!
+        showHidden: true
+      });
+      const gTasks = res.result.items || [];
+      let imported = 0;
+      
+      setTasks(prevTasks => {
+        const newTasks = [...prevTasks];
+        gTasks.forEach(gt => {
+          // Prüfen, ob die Aufgabe schon in der App existiert
+          const exists = newTasks.find(t => t.googleTaskId === gt.id);
+          if (!exists && gt.title) {
+            const newTask = {
+              id: generateId(),
+              title: gt.title,
+              dueDate: gt.due ? gt.due.split('T')[0] : getTodayString(),
+              time: '',
+              isDone: gt.status === 'completed',
+              notes: gt.notes || '',
+              subtasks: [],
+              syncStatus: 'local',
+              createdAt: Date.now(),
+              googleTaskId: gt.id
+            };
+            newTasks.push(newTask);
+            
+            // Sofort in deiner Cloud speichern
+            if (user && db) {
+              const syncUid = localStorage.getItem('taskflow_sync_uid') || user.uid;
+              setDoc(doc(db, `artifacts/taskflow-ultimate/users/${syncUid}/tasks`, newTask.id), newTask);
+            }
+            imported++;
+          }
+        });
+        return newTasks.sort((a, b) => b.createdAt - a.createdAt);
+      });
 
+      if (imported > 0) {
+        addToast('success', `${imported} neue Aufgaben aus Google importiert!`);
+      } else {
+        addToast('info', 'Alle Aufgaben sind bereits synchron.');
+      }
+    } catch(e) {
+      addToast('error', 'Fehler beim Google Import.');
+    }
+  };
   const fetchGoogleData = async () => {
     try {
       // Fetch Calendar
