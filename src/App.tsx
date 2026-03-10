@@ -290,10 +290,10 @@ const importFromGoogle = async () => {
     if (isGoogleLoggedIn) {
       importFromGoogle(); // Einmal sofort abrufen beim Start
       
-      // Und dann alle 5 Minuten (300.000 Millisekunden) still im Hintergrund
+      // Und dann alle 5 Minuten (60000 Millisekunden) still im Hintergrund
       const intervalId = setInterval(() => {
         importFromGoogle();
-      }, 300000);
+      }, 60000);
       
       return () => clearInterval(intervalId);
     }
