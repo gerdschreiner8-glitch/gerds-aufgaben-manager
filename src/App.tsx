@@ -347,7 +347,7 @@ export default function App() {
           // --- Google Tasks Sync ---
           if (task.googleTaskId) {
             await window.gapi.client.tasks.tasks.update({
-              tasklist: 'Aufgaben Gerd',
+              tasklist: 'MTQwODMyOTEyNDM0NjUxOTQ5MTA6MDow',
               task: task.googleTaskId,
               resource: {
                 id: task.googleTaskId,
@@ -359,7 +359,7 @@ export default function App() {
             });
           } else {
             const res = await window.gapi.client.tasks.tasks.insert({
-              tasklist: 'Aufgaben Gerd',
+              tasklist: 'MTQwODMyOTEyNDM0NjUxOTQ5MTA6MDow',
               resource: {
                 title: task.title,
                 notes: task.notes,
@@ -441,7 +441,7 @@ export default function App() {
     if (isGoogleLoggedIn && window.gapi && task?.googleTaskId) {
       try {
         await window.gapi.client.tasks.tasks.delete({
-          tasklist: 'Aufgaben Gerd',
+          tasklist: 'MTQwODMyOTEyNDM0NjUxOTQ5MTA6MDow',
           task: task.googleTaskId
         });
       } catch (e) {}
