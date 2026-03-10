@@ -261,7 +261,7 @@ const importFromGoogle = async () => {
     addToast('info', 'Suche nach neuen Aufgaben bei Google...');
     try {
       const res = await window.gapi.client.tasks.tasks.list({
-        tasklist: 'DEINE_LANGE_ID_HIER_EINTRAGEN', // <--- WICHTIG: Hier wieder deine kopierte ID eintragen!
+        tasklist: 'MTQwODMyOTEyNDM0NjUxOTQ5MTA6MDow', // <--- WICHTIG: Hier wieder deine kopierte ID eintragen!
         showHidden: true
       });
       const gTasks = res.result.items || [];
@@ -1347,12 +1347,15 @@ ${emailContent}
                filter === 'month' ? 'Dieser Monat' : filter}
             </h2>
           </div>
-          <div className="flex items-center space-x-4">
-            {isGoogleLoggedIn && (
-              <div className="hidden sm:flex text-xs px-3 py-1.5 rounded-full font-medium items-center bg-blue-50 text-blue-600 border border-blue-100">
-                <RefreshCw size={12} className="mr-1.5 animate-spin-slow" /> Google Sync aktiv
-              </div>
-            )}
+          {isGoogleLoggedIn && (
+              <button 
+                onClick={importFromGoogle}
+                className="hidden sm:flex text-xs px-3 py-1.5 rounded-full font-medium items-center bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 cursor-pointer transition-colors shadow-sm"
+                title="Aufgaben aus Google Tasks abrufen"
+              >
+                <RefreshCw size={12} className="mr-1.5" /> Google Aufgaben abrufen
+              </button>
+            )}
             {user && (
               <button 
                 onClick={() => setShowSyncModal(true)}
