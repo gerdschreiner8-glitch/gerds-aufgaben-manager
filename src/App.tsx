@@ -184,12 +184,9 @@ export default function App() {
     });
 
     return () => unsubscribeAuth();
-// --- Google API Init ---
+// --- Google API Init & Login Gedächtnis ---
   useEffect(() => {
-    if (!GOOGLE_CLIENT_ID || !GOOGLE_API_KEY) {
-      console.warn("Google API credentials missing. Google features disabled.");
-      return;
-    }
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_API_KEY) return;
 
     const loadGapi = () => {
       if (gapiLoaded.current) return;
@@ -207,24 +204,24 @@ export default function App() {
               ],
             });
             gapiLoaded.current = true;
+
+            // --- DAS GEDÄCHTNIS PRÜFEN ---
+            const savedToken = localStorage.getItem('taskflow_google_token');
+            const tokenExpiry = localStorage.getItem('taskflow_google_token_expiry');
             
-            // --- NEU: Google Token aus dem Gedächtnis laden ---
-            const storedTokenStr = localStorage.getItem('taskflow_google_token');
-            if (storedTokenStr) {
-              const tokenObj = JSON.parse(storedTokenStr);
-              // Prüfen ob der Token noch gültig ist (Google Tokens halten exakt 1 Stunde)
-              if (tokenObj.expires_at && tokenObj.expires_at > Date.now()) {
-                window.gapi.client.setToken(tokenObj);
-                setIsGoogleLoggedIn(true);
-              } else {
-                localStorage.removeItem('taskflow_google_token'); // Abgelaufen -> löschen
-              }
+            // Wenn es einen Schlüssel gibt und er noch nicht abgelaufen ist (1 Stunde)
+            if (savedToken && tokenExpiry && Date.now() < parseInt(tokenExpiry)) {
+              window.gapi.client.setToken({ access_token: savedToken });
+              setIsGoogleLoggedIn(true);
+            } else {
+              // Schlüssel abgelaufen -> aufräumen
+              localStorage.removeItem('taskflow_google_token');
+              localStorage.removeItem('taskflow_google_token_expiry');
             }
 
             if (gisLoaded.current) setIsGoogleReady(true);
-          } catch (e) {
-            console.error("GAPI init error", e);
-            addToast('error', 'Google API konnte nicht initialisiert werden.');
+          } catch (e) { 
+            console.error("GAPI init error", e); 
           }
         });
       };
@@ -240,17 +237,15 @@ export default function App() {
           client_id: GOOGLE_CLIENT_ID,
           scope: 'https://www.googleapis.com/auth/tasks https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly',
           callback: (tokenResponse: any) => {
-            if (tokenResponse.error !== undefined) {
-              throw (tokenResponse);
-            }
+            if (tokenResponse.error !== undefined) throw tokenResponse;
             
-            // --- NEU: Token im Gedächtnis speichern ---
-            // Berechnet die genaue Ablaufzeit (jetzt + 1 Stunde)
-            tokenResponse.expires_at = Date.now() + (tokenResponse.expires_in * 1000);
-            localStorage.setItem('taskflow_google_token', JSON.stringify(tokenResponse));
-
+            // --- DEN NEUEN SCHLÜSSEL INS GEDÄCHTNIS SCHREIBEN ---
+            localStorage.setItem('taskflow_google_token', tokenResponse.access_token);
+            // Gültigkeit auf 55 Minuten setzen (Sicherheitspuffer vor der magischen 1-Stunde-Grenze)
+            localStorage.setItem('taskflow_google_token_expiry', (Date.now() + 3300000).toString()); 
+            
             setIsGoogleLoggedIn(true);
-            addToast('success', 'Erfolgreich bei Google angemeldet.');
+            addToast('success', 'Google verbunden!');
           },
         });
         gisLoaded.current = true;
@@ -264,6 +259,18 @@ export default function App() {
   }, [addToast]);
 
   const handleGoogleLogin = () => {
+    if (!isGoogleReady || !tokenClient.current) {
+      addToast('error', 'Google Services laden noch...');
+      return;
+    }
+    // Der "Silent Login" Trick: Wenn du schon mal zugestimmt hast, 
+    // loggt prompt: '' dich sofort ein, ohne das Fenster zu zeigen.
+    if (window.gapi.client.getToken() === null) {
+      tokenClient.current.requestAccessToken({ prompt: 'consent' });
+    } else {
+      tokenClient.current.requestAccessToken({ prompt: '' });
+    }
+  };
     if (!isGoogleReady || !tokenClient.current) {
       addToast('error', 'Google Services sind noch nicht bereit.');
       return;
