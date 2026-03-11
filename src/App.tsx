@@ -183,9 +183,7 @@ export default function App() {
     });
 
     return () => unsubscribeAuth();
-  }, [addToast]);
-
-  // --- Google API Init ---
+// --- Google API Init ---
   useEffect(() => {
     if (!GOOGLE_CLIENT_ID || !GOOGLE_API_KEY) {
       console.warn("Google API credentials missing. Google features disabled.");
@@ -208,7 +206,21 @@ export default function App() {
               ],
             });
             gapiLoaded.current = true;
-            checkGoogleReady();
+            
+            // --- NEU: Google Token aus dem Gedächtnis laden ---
+            const storedTokenStr = localStorage.getItem('taskflow_google_token');
+            if (storedTokenStr) {
+              const tokenObj = JSON.parse(storedTokenStr);
+              // Prüfen ob der Token noch gültig ist (Google Tokens halten exakt 1 Stunde)
+              if (tokenObj.expires_at && tokenObj.expires_at > Date.now()) {
+                window.gapi.client.setToken(tokenObj);
+                setIsGoogleLoggedIn(true);
+              } else {
+                localStorage.removeItem('taskflow_google_token'); // Abgelaufen -> löschen
+              }
+            }
+
+            if (gisLoaded.current) setIsGoogleReady(true);
           } catch (e) {
             console.error("GAPI init error", e);
             addToast('error', 'Google API konnte nicht initialisiert werden.');
@@ -230,26 +242,35 @@ export default function App() {
             if (tokenResponse.error !== undefined) {
               throw (tokenResponse);
             }
+            
+            // --- NEU: Token im Gedächtnis speichern ---
+            // Berechnet die genaue Ablaufzeit (jetzt + 1 Stunde)
+            tokenResponse.expires_at = Date.now() + (tokenResponse.expires_in * 1000);
+            localStorage.setItem('taskflow_google_token', JSON.stringify(tokenResponse));
+
             setIsGoogleLoggedIn(true);
             addToast('success', 'Erfolgreich bei Google angemeldet.');
-            fetchGoogleData();
           },
         });
         gisLoaded.current = true;
-        checkGoogleReady();
+        if (gapiLoaded.current) setIsGoogleReady(true);
       };
       document.body.appendChild(script);
-    };
-
-    const checkGoogleReady = () => {
-      if (gapiLoaded.current && gisLoaded.current) {
-        setIsGoogleReady(true);
-      }
     };
 
     loadGapi();
     loadGis();
   }, [addToast]);
+
+  const handleGoogleLogin = () => {
+    if (!isGoogleReady || !tokenClient.current) {
+      addToast('error', 'Google Services sind noch nicht bereit.');
+      return;
+    }
+    // Durch prompt: '' gibt es kein nerviges Bestätigungsfenster mehr,
+    // das Fenster blitzt nur kurz auf und loggt dich sofort ein!
+    tokenClient.current.requestAccessToken({prompt: ''});
+  };
 
   const handleGoogleLogin = () => {
     if (!isGoogleReady || !tokenClient.current) {
