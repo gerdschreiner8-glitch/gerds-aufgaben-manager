@@ -378,13 +378,15 @@ export default function App() {
   // --- Task Operations ---
   const syncTimeoutRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
 
-  const saveTask = async (task: Task) => {
+  const saveTask = async (task: Task, skipGoogle = false) => {
+    // 1. Lokales State-Update für sofortiges Feedback
     setTasks(prev => {
       const exists = prev.find(t => t.id === task.id);
       if (exists) return prev.map(t => t.id === task.id ? task : t);
       return [task, ...prev];
     });
 
+    // 2. Firebase Cloud Sync
     if (user && db) {
       try {
         const syncUid = localStorage.getItem('taskflow_sync_uid') || user.uid;
@@ -394,93 +396,48 @@ export default function App() {
       }
     }
 
-    if (isGoogleLoggedIn && window.gapi) {
+    // 3. REINER GOOGLE TASKS SYNC (Kein Kalender-Termin mehr!)
+    if (!skipGoogle && isGoogleLoggedIn && window.gapi?.client?.tasks) {
       if (syncTimeoutRef.current[task.id]) {
         clearTimeout(syncTimeoutRef.current[task.id]);
       }
       
       syncTimeoutRef.current[task.id] = setTimeout(async () => {
         try {
-          // FIX 4: Link anhängen & Ganztags-Datum fixieren
           const appLink = `\n\n🔗 Zur App: ${window.location.origin}`;
           const cleanNotes = (task.notes || "").replace(appLink, ""); 
           
+          const resource = {
+            title: task.title,
+            notes: cleanNotes + appLink,
+            status: task.isDone ? 'completed' : 'needsAction',
+            // Hier wird das Datum als "Termin-Aufgabe" in Google Tasks gesetzt
+            due: task.dueDate ? `${task.dueDate}T00:00:00.000Z` : null
+          };
+
           if (task.googleTaskId) {
             await window.gapi.client.tasks.tasks.update({
               tasklist: 'MTQwODMyOTEyNDM0NjUxOTQ5MTA6MDow',
               task: task.googleTaskId,
-              resource: {
-                id: task.googleTaskId,
-                title: task.title,
-                notes: cleanNotes + appLink,
-                status: task.isDone ? 'completed' : 'needsAction',
-                due: task.dueDate ? `${task.dueDate}T00:00:00.000Z` : undefined
-              }
+              resource: { ...resource, id: task.googleTaskId }
             });
           } else {
             const res = await window.gapi.client.tasks.tasks.insert({
               tasklist: 'MTQwODMyOTEyNDM0NjUxOTQ5MTA6MDow',
-              resource: {
-                title: task.title,
-                notes: cleanNotes + appLink,
-                status: task.isDone ? 'completed' : 'needsAction',
-                due: task.dueDate ? `${task.dueDate}T00:00:00.000Z` : undefined
-              }
+              resource
             });
             task.googleTaskId = res.result.id;
-          }
-
-          if (task.dueDate) {
-            const isAllDayTask = task.time === 'Ganztags' || !task.time;
-            const startDateTime = !isAllDayTask 
-              ? new Date(`${task.dueDate}T${task.time}:00`).toISOString() 
-              : null;
             
-            const eventResource = {
-              summary: `${task.isDone ? '✅ ' : ''}${task.title}`,
-              description: task.notes,
-              location: task.location || '',
-              start: !isAllDayTask 
-                ? { dateTime: startDateTime } 
-                : { date: task.dueDate },
-              end: !isAllDayTask 
-                ? { dateTime: new Date(new Date(startDateTime!).getTime() + 60 * 60 * 1000).toISOString() } 
-                : { date: task.dueDate }
-            };
-
-            if (task.googleCalendarEventId) {
-              await window.gapi.client.calendar.events.update({
-                calendarId: 'primary',
-                eventId: task.googleCalendarEventId,
-                resource: eventResource
-              });
-            } else {
-              const calRes = await window.gapi.client.calendar.events.insert({
-                calendarId: 'primary',
-                resource: eventResource
-              });
-              task.googleCalendarEventId = calRes.result.id;
+            // Neue Google-ID in Firebase speichern
+            if (user && db) {
+              const syncUid = localStorage.getItem('taskflow_sync_uid') || user.uid;
+              await setDoc(doc(db, `artifacts/taskflow-ultimate/users/${syncUid}/tasks`, task.id), task);
             }
-          } else if (task.googleCalendarEventId) {
-            try {
-              await window.gapi.client.calendar.events.delete({
-                calendarId: 'primary',
-                eventId: task.googleCalendarEventId
-              });
-              task.googleCalendarEventId = undefined;
-            } catch (e) {
-              console.warn("Could not delete calendar event", e);
-            }
-          }
-
-          if (user && db) {
-            const syncUid = localStorage.getItem('taskflow_sync_uid') || user.uid;
-            await setDoc(doc(db, `artifacts/taskflow-ultimate/users/${syncUid}/tasks`, task.id), task);
           }
         } catch (e) {
-          console.error("Google sync error", e);
+          console.error("Google Tasks sync error", e);
         }
-      }, 2500);
+      }, 2500); // 2,5 Sekunden Verzögerung, damit nicht jeder Tastenanschlag sofort gesendet wird
     }
   };
     const deleteTask = async (taskId: string) => {
