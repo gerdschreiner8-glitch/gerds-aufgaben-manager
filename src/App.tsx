@@ -12,8 +12,8 @@ import {
   RefreshCw, FileText, Copy, Download, Mail, AlertCircle, Check,
   ChevronDown, ChevronUp, Play, Square, Upload, Users, Phone, StopCircle,
   Camera, Image as ImageIcon, MapPin, Settings
-} from 'lucide-react';
-
+} from 'lucide-react'; Search
+Camera, Image as ImageIcon, MapPin, Settings, Search
 // --- Types ---
 type SubtaskTodo = {
   id: string;
@@ -98,6 +98,7 @@ export default function App() {
   // State
   const [tasks, setTasks] = useState<Task[]>([]);
   const [filter, setFilter] = useState<'today' | 'week' | 'month' | 'all' | 'archive' | 'calendar'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [aiAutoPilot, setAiAutoPilot] = useState(false);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
@@ -1131,7 +1132,29 @@ ${emailContent}
     archive: tasks.filter(t => t.isDone).length,
   };
 
+  // --- UI RENDER LOGIK & DEEP SEARCH ---
   const filteredTasks = tasks.filter(t => {
+    // 1. Moderne Tiefensuche (Deep Search)
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      // Durchsucht die Hauptaufgabe
+      const inMain = (t.title?.toLowerCase().includes(query)) || 
+                     (t.notes?.toLowerCase().includes(query)) || 
+                     (t.meetingResults?.toLowerCase().includes(query)) ||
+                     (t.sachbearbeiter?.toLowerCase().includes(query)) ||
+                     (t.location?.toLowerCase().includes(query));
+      
+      // Durchsucht alle Teilschritte und deren Unter-Aufgaben
+      const inSubtasks = t.subtasks?.some((sub: any) => 
+        sub.title?.toLowerCase().includes(query) || 
+        sub.notes?.toLowerCase().includes(query) ||
+        sub.todos?.some((todo: any) => todo.title?.toLowerCase().includes(query))
+      );
+
+      return inMain || inSubtasks;
+    }
+
+    // 2. Normale Filter-Logik (wenn nicht gesucht wird)
     if (filter === 'archive') return t.isDone;
     if (t.isDone) return false;
     
@@ -1146,6 +1169,7 @@ ${emailContent}
       return t.dueDate.substring(0, 7) === today.substring(0, 7);
     }
     return true;
+  });
   });
 
   // --- UI Components ---
@@ -1309,38 +1333,42 @@ ${emailContent}
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col h-screen overflow-hidden">
-        {/* Header */}
-        <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 p-4 flex items-center justify-between sticky top-0 z-20">
+        {/* Header mit Suchleiste */}
+        <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 p-4 flex items-center justify-between sticky top-0 z-20 gap-4">
           <div className="flex items-center">
             <button className="md:hidden mr-4 text-slate-500" onClick={() => setIsSidebarOpen(true)}>
               <Menu size={24} />
             </button>
-            <h2 className="text-2xl font-bold tracking-tight capitalize">
-              {filter === 'calendar' ? 'Google Kalender' : 
-               filter === 'archive' ? 'Archiv' : 
-               filter === 'all' ? 'Alle Aufgaben' : 
-               filter === 'today' ? 'Heute' : 
-               filter === 'week' ? 'Diese Woche' : 
-               filter === 'month' ? 'Dieser Monat' : filter}
+            <h2 className="text-2xl font-bold tracking-tight capitalize hidden sm:block">
+              {searchQuery ? 'Suchergebnisse' : filter === 'calendar' ? 'Google Kalender' : filter === 'archive' ? 'Archiv' : filter === 'all' ? 'Alle Aufgaben' : filter === 'today' ? 'Heute' : filter === 'week' ? 'Diese Woche' : filter === 'month' ? 'Dieser Monat' : filter}
             </h2>
           </div>
+
+          {/* Die neue Suchleiste */}
+          <div className="flex-1 max-w-xl mx-auto relative transition-all duration-300 focus-within:max-w-2xl">
+            <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input 
+              type="text" 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Aufgaben, Notizen, Orte, Personen durchsuchen..."
+              className="w-full pl-11 pr-10 py-2.5 bg-slate-100 border-transparent rounded-full text-sm focus:bg-white focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 transition-all text-slate-700 font-medium"
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 bg-slate-200 p-1 rounded-full transition-colors">
+                <X size={12} />
+              </button>
+            )}
+          </div>
+
           <div className="flex items-center space-x-3">
             {isGoogleLoggedIn && (
               <button 
                 onClick={() => importFromGoogle(false)}
-                className="hidden sm:flex text-xs px-3 py-1.5 rounded-full font-medium items-center bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 cursor-pointer transition-colors shadow-sm"
+                className="hidden lg:flex text-xs px-3 py-1.5 rounded-full font-medium items-center bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 cursor-pointer transition-colors shadow-sm"
                 title="Aufgaben aus Google Tasks abrufen"
               >
-                <RefreshCw size={12} className="mr-1.5" /> Google Aufgaben abrufen
-              </button>
-            )}
-            {user && (
-              <button 
-                onClick={() => setShowSyncModal(true)}
-                className={`text-xs px-3 py-1.5 rounded-full font-medium flex items-center transition-colors cursor-pointer ${localStorage.getItem('taskflow_sync_uid') ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'}`}
-              >
-                <RefreshCw size={12} className={`mr-1.5 ${localStorage.getItem('taskflow_sync_uid') ? 'animate-spin-slow' : ''}`} /> 
-                {localStorage.getItem('taskflow_sync_uid') ? 'Synchronisiert (Code)' : 'Cloud Sync aktiv'}
+                <RefreshCw size={12} className="mr-1.5" /> Sync
               </button>
             )}
             <button 
