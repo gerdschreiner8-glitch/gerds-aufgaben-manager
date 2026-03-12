@@ -63,7 +63,7 @@ type ToastMessage = {
 };
 
 // --- Environment & Config ---
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 const GOOGLE_CLIENT_ID = localStorage.getItem('taskflow_google_client_id') || import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const GOOGLE_API_KEY = localStorage.getItem('taskflow_google_api_key') || import.meta.env.VITE_GOOGLE_API_KEY || '';
 const FIREBASE_CONFIG = {
