@@ -1,0 +1,7 @@
+{
+  "name": "Gerd´s Aufgaben-Manager",
+  "description": "Eine hochmoderne, extrem stabile und benutzerfreundliche Aufgaben Manager App mit KI-Funktionen, Google Workspace Integration und Firebase-Sync.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

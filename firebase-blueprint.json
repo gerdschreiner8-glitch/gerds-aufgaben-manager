@@ -1,0 +1,31 @@
+{
+  "entities": {
+    "Task": {
+      "title": "Task",
+      "description": "A task in the task manager",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "time": { "type": "string" },
+        "plannedFor": { "type": "string" },
+        "followUpDate": { "type": "string" },
+        "deadline": { "type": "string" },
+        "isDone": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "location": { "type": "string" },
+        "recurrence": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "title", "userId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "Task" },
+      "description": "User tasks collection"
+    }
+  }
+}
