@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, User } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query } from 'firebase/firestore';
 import { GoogleGenAI, Type } from '@google/genai';
 import { jsPDF } from 'jspdf';
 import Markdown from 'react-markdown';
@@ -12,6 +12,11 @@ import {
   ChevronDown, ChevronUp, Play, Square, Upload, Users, Phone, StopCircle,
   Camera, Image as ImageIcon, MapPin, Settings
 } from 'lucide-react';
+
+// --- Globale Umgebungsvariablen (für sicheren iFrame/Canvas Sync) ---
+declare const __initial_auth_token: string | undefined;
+declare const __app_id: string | undefined;
+declare const __firebase_config: string | undefined;
 
 // --- Types ---
 type SubtaskTodo = {
@@ -37,7 +42,7 @@ type Task = {
   isDone: boolean;
   notes: string;
   subtasks: Subtask[];
-  attachedFile?: { name: string; type: string; data: string }; // Keep for backward compatibility
+  attachedFile?: { name: string; type: string; data: string };
   attachedFiles?: { name: string; type: string; data: string }[];
   phoneNumber?: string;
   whatsappNumber?: string;
@@ -65,16 +70,20 @@ type ToastMessage = {
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GOOGLE_CLIENT_ID = localStorage.getItem('taskflow_google_client_id') || import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const GOOGLE_API_KEY = localStorage.getItem('taskflow_google_api_key') || import.meta.env.VITE_GOOGLE_API_KEY || '';
-const FIREBASE_CONFIG = {
+
+const FALLBACK_FIREBASE_CONFIG = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "dummy",
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "dummy",
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "dummy",
 };
 
 // --- Firebase Init ---
-let app, auth: any, db: any;
+let app: any, auth: any, db: any;
 try {
-  app = initializeApp(FIREBASE_CONFIG);
+  const config = typeof __firebase_config !== 'undefined' && __firebase_config 
+    ? JSON.parse(__firebase_config) 
+    : FALLBACK_FIREBASE_CONFIG;
+  app = initializeApp(config);
   auth = getAuth(app);
   db = getFirestore(app);
 } catch (e) {
@@ -140,6 +149,8 @@ export default function App() {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const scannerInputRef = useRef<HTMLInputElement>(null);
+  const firestoreTimeoutRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
+  const googleSyncTimeoutRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
 
   // --- Toast System ---
   const addToast = useCallback((type: 'success' | 'error' | 'info', message: string) => {
@@ -150,50 +161,63 @@ export default function App() {
     }, 5000);
   }, []);
 
-  // --- Firebase Sync ---
+  // --- Firebase Auth (Strict Mandatory Pattern) ---
   useEffect(() => {
-    if (!auth || !db) return;
+    if (!auth) return;
     
-    // Auth Initialization ensuring stable rule compliance
     const initAuth = async () => {
-      if (!auth.currentUser) {
-        await signInAnonymously(auth).catch(e => console.warn("Anon auth failed", e));
+      try {
+        // MUSS immer VOR onAuthStateChanged passieren!
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (e) {
+        console.error("Auth init error:", e);
       }
     };
+    
     initAuth();
     
     const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
-      if (!u) return;
       setUser(u);
-      
-      // SICHERHEITS-FIX: Geteilte Syncs (per Code) in public, eigene in users
-      const syncUid = localStorage.getItem('taskflow_sync_uid');
-      const collectionPath = syncUid 
-        ? `artifacts/taskflow-ultimate/public/data/sync_${syncUid}` 
-        : `artifacts/taskflow-ultimate/users/${u.uid}/tasks`;
-        
-      const tasksRef = collection(db, collectionPath);
-      const q = query(tasksRef);
-      const unsubscribeDb = onSnapshot(q, (snapshot) => {
-        const loadedTasks: Task[] = [];
-        snapshot.forEach((doc) => {
-          loadedTasks.push({ id: doc.id, ...doc.data() } as Task);
-        });
-        setTasks(loadedTasks.sort((a, b) => b.createdAt - a.createdAt));
-      }, (error) => {
-        console.error("Firestore sync error:", error);
-        addToast('error', 'Fehler bei der Cloud-Synchronisierung.');
-      });
-      return () => unsubscribeDb();
     });
 
     return () => unsubscribeAuth();
-  }, [addToast]);
+  }, []);
+
+  // --- Firebase Data Sync ---
+  useEffect(() => {
+    if (!user || !db) return; // MUSS durch User geschützt sein
+
+    const syncUid = localStorage.getItem('taskflow_sync_uid');
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'taskflow-ultimate';
+    
+    const collectionPath = syncUid 
+      ? `artifacts/${appId}/public/data/sync_${syncUid}` 
+      : `artifacts/${appId}/users/${user.uid}/tasks`;
+      
+    const tasksRef = collection(db, collectionPath);
+    
+    // Keine orderBy() um fehlende Indizes zu vermeiden, Sortierung lokal im RAM
+    const unsubscribeDb = onSnapshot(query(tasksRef), (snapshot) => {
+      const loadedTasks: Task[] = [];
+      snapshot.forEach((doc) => {
+        loadedTasks.push({ id: doc.id, ...doc.data() } as Task);
+      });
+      setTasks(loadedTasks.sort((a, b) => b.createdAt - a.createdAt));
+    }, (error) => {
+      console.error("Firestore sync error:", error);
+      addToast('error', 'Fehler bei der Cloud-Synchronisierung. Permissions verweigert?');
+    });
+
+    return () => unsubscribeDb();
+  }, [user, addToast]);
 
   // --- Google API Init ---
   useEffect(() => {
     if (!GOOGLE_CLIENT_ID || !GOOGLE_API_KEY) {
-      console.warn("Google API credentials missing. Google features disabled.");
       return;
     }
 
@@ -216,7 +240,6 @@ export default function App() {
             checkGoogleReady();
           } catch (e) {
             console.error("GAPI init error", e);
-            addToast('error', 'Google API konnte nicht initialisiert werden.');
           }
         });
       };
@@ -270,7 +293,6 @@ export default function App() {
 
   const fetchGoogleData = async () => {
     try {
-      // Fetch Calendar
       const calRes = await window.gapi.client.calendar.events.list({
         'calendarId': 'primary',
         'timeMin': (new Date()).toISOString(),
@@ -281,7 +303,6 @@ export default function App() {
       });
       setGoogleEvents(calRes.result.items || []);
 
-      // Fetch Gmail
       const gmailRes = await window.gapi.client.gmail.users.messages.list({
         'userId': 'me',
         'q': 'is:unread',
@@ -323,39 +344,44 @@ export default function App() {
     }
   };
 
-  // --- Task Operations ---
-  const syncTimeoutRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
-
-  const saveTask = async (task: Task) => {
-    // Local state update for immediate feedback
+  // --- Zentrale Entprellung (Debounce) für das absolute Beseitigen von Cursor-Sprüngen ---
+  const saveTask = (task: Task) => {
+    // 1. Lokaler State Update (für sofortige UI Reaktion)
     setTasks(prev => {
       const exists = prev.find(t => t.id === task.id);
       if (exists) return prev.map(t => t.id === task.id ? task : t);
       return [task, ...prev];
     });
 
-    // Firebase Sync mit korrigiertem Berechtigungspfad
+    // 2. Firebase Sync - Verzögert um 800ms (verhindert Konflikte mit onSnapshot)
     if (user && db) {
-      try {
-        const syncUid = localStorage.getItem('taskflow_sync_uid');
-        const collectionPath = syncUid 
-          ? `artifacts/taskflow-ultimate/public/data/sync_${syncUid}` 
-          : `artifacts/taskflow-ultimate/users/${user.uid}/tasks`;
-        await setDoc(doc(db, collectionPath, task.id), task);
-      } catch (e) {
-        console.error("Firebase save error", e);
-      }
-    }
-
-    // Google Tasks Sync (Debounced 2500ms)
-    if (isGoogleLoggedIn && window.gapi) {
-      if (syncTimeoutRef.current[task.id]) {
-        clearTimeout(syncTimeoutRef.current[task.id]);
+      if (firestoreTimeoutRef.current[task.id]) {
+        clearTimeout(firestoreTimeoutRef.current[task.id]);
       }
       
-      syncTimeoutRef.current[task.id] = setTimeout(async () => {
+      firestoreTimeoutRef.current[task.id] = setTimeout(async () => {
         try {
-          // --- Google Tasks Sync ---
+          const syncUid = localStorage.getItem('taskflow_sync_uid');
+          const appId = typeof __app_id !== 'undefined' ? __app_id : 'taskflow-ultimate';
+          const collectionPath = syncUid 
+            ? `artifacts/${appId}/public/data/sync_${syncUid}` 
+            : `artifacts/${appId}/users/${user.uid}/tasks`;
+            
+          await setDoc(doc(db, collectionPath, task.id), task);
+        } catch (e) {
+          console.error("Firebase save error", e);
+        }
+      }, 800); 
+    }
+
+    // 3. Google Tasks/Calendar Sync (Verzögert um 2500ms zur Schonung der Google API)
+    if (isGoogleLoggedIn && window.gapi) {
+      if (googleSyncTimeoutRef.current[task.id]) {
+        clearTimeout(googleSyncTimeoutRef.current[task.id]);
+      }
+      
+      googleSyncTimeoutRef.current[task.id] = setTimeout(async () => {
+        try {
           if (task.googleTaskId) {
             await window.gapi.client.tasks.tasks.update({
               tasklist: '@default',
@@ -381,7 +407,6 @@ export default function App() {
             task.googleTaskId = res.result.id;
           }
 
-          // --- Google Calendar Sync ---
           if (task.dueDate) {
             const isAllDayTask = task.time === 'Ganztags' || !task.time;
             const startDateTime = !isAllDayTask 
@@ -392,12 +417,8 @@ export default function App() {
               summary: `${task.isDone ? '✅ ' : ''}${task.title}`,
               description: task.notes,
               location: task.location || '',
-              start: !isAllDayTask 
-                ? { dateTime: startDateTime } 
-                : { date: task.dueDate },
-              end: !isAllDayTask 
-                ? { dateTime: new Date(new Date(startDateTime!).getTime() + 60 * 60 * 1000).toISOString() } 
-                : { date: task.dueDate }
+              start: !isAllDayTask ? { dateTime: startDateTime } : { date: task.dueDate },
+              end: !isAllDayTask ? { dateTime: new Date(new Date(startDateTime!).getTime() + 60 * 60 * 1000).toISOString() } : { date: task.dueDate }
             };
 
             if (task.googleCalendarEventId) {
@@ -414,24 +435,22 @@ export default function App() {
               task.googleCalendarEventId = calRes.result.id;
             }
           } else if (task.googleCalendarEventId) {
-            // Remove from calendar if date is removed
             try {
               await window.gapi.client.calendar.events.delete({
                 calendarId: 'primary',
                 eventId: task.googleCalendarEventId
               });
               task.googleCalendarEventId = undefined;
-            } catch (e) {
-              console.warn("Could not delete calendar event", e);
-            }
+            } catch (e) {}
           }
 
-          // Final update to Firebase if IDs changed
+          // Finales Update, falls sich IDs geändert haben
           if (user && db) {
             const syncUid = localStorage.getItem('taskflow_sync_uid');
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'taskflow-ultimate';
             const collectionPath = syncUid 
-              ? `artifacts/taskflow-ultimate/public/data/sync_${syncUid}` 
-              : `artifacts/taskflow-ultimate/users/${user.uid}/tasks`;
+              ? `artifacts/${appId}/public/data/sync_${syncUid}` 
+              : `artifacts/${appId}/users/${user.uid}/tasks`;
             await setDoc(doc(db, collectionPath, task.id), task);
           }
         } catch (e) {
@@ -445,13 +464,13 @@ export default function App() {
     const task = tasks.find(t => t.id === taskId);
     setTasks(prev => prev.filter(t => t.id !== taskId));
     
-    // Firebase delete mit korrigiertem Pfad
     if (user && db) {
       try {
         const syncUid = localStorage.getItem('taskflow_sync_uid');
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'taskflow-ultimate';
         const collectionPath = syncUid 
-          ? `artifacts/taskflow-ultimate/public/data/sync_${syncUid}` 
-          : `artifacts/taskflow-ultimate/users/${user.uid}/tasks`;
+          ? `artifacts/${appId}/public/data/sync_${syncUid}` 
+          : `artifacts/${appId}/users/${user.uid}/tasks`;
         await deleteDoc(doc(db, collectionPath, taskId));
       } catch (e) {
         console.error("Firebase delete error", e);
@@ -816,7 +835,6 @@ ${task.subtasks.map(s => `- ${s.title} [${s.isDone ? 'Erledigt' : 'Offen'}] (Not
       cursorY += 7;
     });
     
-    // SICHERHEITS-FIX: PDF Download mit Fallback für iFrames
     try {
       doc.save(`TaskFlow_${task.title.replace(/\s+/g, '_')}.pdf`);
       addToast('success', 'PDF erfolgreich exportiert.');
@@ -2086,24 +2104,6 @@ function TaskCard({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
-  // --- NEU: Lokaler State für stabiles Tippen (verhindert 2-Wege-Sync Konflikte) ---
-  const [localTitle, setLocalTitle] = useState(task.title);
-  const [localNotes, setLocalNotes] = useState(task.notes);
-
-  useEffect(() => {
-    setLocalTitle(task.title);
-    setLocalNotes(task.notes);
-  }, [task.title, task.notes]);
-
-  const handleTitleBlur = () => {
-    if (localTitle !== task.title) onSave({ ...task, title: localTitle });
-  };
-
-  const handleNotesBlur = () => {
-    if (localNotes !== task.notes) onSave({ ...task, notes: localNotes });
-  };
-  // ----------------------------------------------------------------------------------
-
   const generateDocument = async (subtask: any) => {
     onAddToast('info', 'KI erstellt Dokument...');
     try {
@@ -2546,9 +2546,8 @@ ${task.meetingResults}
         <div className="flex-1 min-w-0">
           <input 
             type="text"
-            value={localTitle}
-            onChange={(e) => setLocalTitle(e.target.value)}
-            onBlur={handleTitleBlur}
+            value={task.title}
+            onChange={(e) => onSave({ ...task, title: e.target.value })}
             onClick={(e) => e.stopPropagation()}
             className={`w-full bg-transparent border-none p-0 text-lg font-bold focus:ring-0 ${task.isDone ? 'text-slate-500 line-through' : 'text-slate-800'}`}
           />
@@ -2636,9 +2635,8 @@ ${task.meetingResults}
                   </button>
                 </div>
                 <textarea 
-                  value={localNotes}
-                  onChange={(e) => setLocalNotes(e.target.value)}
-                  onBlur={handleNotesBlur}
+                  value={task.notes}
+                  onChange={(e) => onSave({ ...task, notes: e.target.value })}
                   className="w-full p-0 border-none bg-transparent text-sm focus:ring-0 resize-y min-h-[10rem] max-h-[30rem] overflow-y-auto placeholder:text-slate-300"
                   placeholder="Hier kannst du Details, Links oder weitere Infos zur Aufgabe festhalten..."
                 />
