@@ -226,90 +226,7 @@ export default function App() {
       const script = document.createElement('script');
       script.src = 'https://apis.google.com/js/api.js';
       script.onload = () => {
-        window.gapi.load('client', async () => {
-          try {
-            await window.gapi.client.init({
-              apiKey: GOOGLE_API_KEY,
-              discoveryDocs: [
-                'https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest',
-                'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest',
-                'https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest'
-              ],
-            });
-            gapiLoaded.current = true;
-            checkGoogleReady();
-          } catch (e) {
-            console.error("GAPI init error", e);
-          }
-        });
-      };
-      document.body.appendChild(script);
-    };
-
-    const loadGis = () => {
-      if (gisLoaded.current) return;
-      const script = document.createElement('script');
-      script.src = 'https://accounts.google.com/gsi/client';
-      script.onload = () => {
-        tokenClient.current = window.google.accounts.oauth2.initTokenClient({
-          client_id: GOOGLE_CLIENT_ID,
-          scope: 'https://www.googleapis.com/auth/tasks https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly',
-          callback: (tokenResponse: any) => {
-            if (tokenResponse.error !== undefined) {
-              throw (tokenResponse);
-            }
-            setIsGoogleLoggedIn(true);
-            addToast('success', 'Erfolgreich bei Google angemeldet.');
-            fetchGoogleData();
-          },
-        });
-        gisLoaded.current = true;
-        checkGoogleReady();
-      };
-      document.body.appendChild(script);
-    };
-
-    const checkGoogleReady = () => {
-      if (gapiLoaded.current && gisLoaded.current) {
-        setIsGoogleReady(true);
-      }
-    };
-
-    loadGapi();
-    loadGis();
-  }, [addToast]);
-
-  const handleGoogleLogin = () => {
-    if (!isGoogleReady || !tokenClient.current) {
-      addToast('error', 'Google Services sind noch nicht bereit oder konfiguriert.');
-      return;
-    }
-    if (window.gapi.client.getToken() === null) {
-      tokenClient.current.requestAccessToken({prompt: 'consent'});
-    } else {
-      tokenClient.current.requestAccessToken({prompt: ''});
-    }
-  };
-
-  const fetchGoogleData = async () => {
-    try {
-      const calRes = await window.gapi.client.calendar.events.list({
-        'calendarId': 'primary',
-        'timeMin': (new Date()).toISOString(),
-        'showDeleted': false,
-        'singleEvents': true,
-        'maxResults': 10,
-        'orderBy': 'startTime'
-      });
-      setGoogleEvents(calRes.result.items || []);
-
-      const gmailRes = await window.gapi.client.gmail.users.messages.list({
-        'userId': 'me',
-        'q': 'is:unread',
-        'maxResults': 10
-      });
-      
-      if (gmailRes.result.messages) {
+        if (gmailRes.result.messages) {
         const messages = await Promise.all(gmailRes.result.messages.map(async (msg: any) => {
           const m = await window.gapi.client.gmail.users.messages.get({
             'userId': 'me',
@@ -324,6 +241,89 @@ export default function App() {
       }
     } catch (e) {
       console.error("Error fetching Google data", e);
+    }
+  };
+
+  // --- NEU: Sicherer Import von Google Tasks ---
+  const syncFromGoogleTasks = async () => {
+    if (!isGoogleLoggedIn || !window.gapi) {
+      addToast('error', 'Bitte zuerst mit Google verbinden.');
+      return;
+    }
+    
+    addToast('info', 'Prüfe Google Tasks auf neue Einträge...');
+    
+    try {
+      const tasksRes = await window.gapi.client.tasks.tasks.list({
+        tasklist: '@default',
+        showHidden: true,
+        maxResults: 100
+      });
+      
+      const gTasks = tasksRes.result.items || [];
+      let importedCount = 0;
+      let updatedCount = 0;
+
+      const syncUid = localStorage.getItem('taskflow_sync_uid');
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'taskflow-ultimate';
+      const collectionPath = syncUid 
+        ? `artifacts/${appId}/public/data/sync_${syncUid}` 
+        : `artifacts/${appId}/users/${user?.uid}/tasks`;
+
+      for (const gTask of gTasks) {
+        if (!gTask.title) continue; // Überspringe leere Tasks
+        
+        // Prüfen, ob die Aufgabe bereits in unserer lokalen Liste ist
+        const existingTask = tasks.find(t => t.googleTaskId === gTask.id);
+        
+        if (!existingTask) {
+          // 1. Neue Aufgabe aus Google Tasks sicher importieren
+          const newTask: Task = {
+            id: generateId(),
+            title: gTask.title,
+            notes: gTask.notes || '',
+            dueDate: gTask.due ? gTask.due.substring(0, 10) : getTodayString(),
+            time: '',
+            followUpDate: '',
+            deadline: '',
+            isDone: gTask.status === 'completed',
+            subtasks: [],
+            syncStatus: 'synced',
+            googleTaskId: gTask.id,
+            createdAt: Date.now()
+          };
+          
+          // Direkt in die Datenbank schreiben, um Loops beim Upload zu verhindern
+          if (user && db) {
+            await setDoc(doc(db, collectionPath, newTask.id), newTask);
+          }
+          importedCount++;
+        } else {
+          // 2. Existierende Aufgabe aktualisieren (z.B. Titel geändert oder in Google als erledigt markiert)
+          const isGDone = gTask.status === 'completed';
+          if (existingTask.isDone !== isGDone || existingTask.title !== gTask.title) {
+            const updatedTask = { 
+              ...existingTask, 
+              isDone: isGDone, 
+              title: gTask.title 
+            };
+            if (user && db) {
+              await setDoc(doc(db, collectionPath, updatedTask.id), updatedTask);
+            }
+            updatedCount++;
+          }
+        }
+      }
+      
+      if (importedCount > 0 || updatedCount > 0) {
+         addToast('success', `${importedCount} neue Aufgaben geladen, ${updatedCount} aktualisiert.`);
+      } else {
+         addToast('info', 'Deine Aufgaben sind bereits synchron mit Google Tasks.');
+      }
+
+    } catch (e) {
+      console.error("Error fetching Google Tasks", e);
+      addToast('error', 'Fehler beim Abrufen der Google Tasks.');
     }
   };
 
@@ -1258,6 +1258,16 @@ ${emailContent}
             <Mail size={20} />
             <span>Gmail Posteingang</span>
           </button>
+          
+          {/* NEU: Button zum manuellen Laden aus Google Tasks */}
+          <button 
+            onClick={syncFromGoogleTasks}
+            className="w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-colors text-slate-600 hover:bg-slate-100"
+          >
+            <Download size={20} />
+            <span>Aus Google Tasks laden</span>
+          </button>
+
           {!isGoogleLoggedIn && (
             <div className="px-4 mt-2">
               <button onClick={handleGoogleLogin} className="w-full py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-100 transition-colors">
