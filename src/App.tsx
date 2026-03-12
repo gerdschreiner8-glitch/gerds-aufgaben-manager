@@ -154,26 +154,37 @@ export default function App() {
   useEffect(() => {
     if (!auth || !db) return;
     
-    const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
-      if (u) {
-        setUser(u);
-        const syncUid = localStorage.getItem('taskflow_sync_uid') || u.uid;
-        const tasksRef = collection(db, `artifacts/taskflow-ultimate/users/${syncUid}/tasks`);
-        const q = query(tasksRef);
-        const unsubscribeDb = onSnapshot(q, (snapshot) => {
-          const loadedTasks: Task[] = [];
-          snapshot.forEach((doc) => {
-            loadedTasks.push({ id: doc.id, ...doc.data() } as Task);
-          });
-          setTasks(loadedTasks.sort((a, b) => b.createdAt - a.createdAt));
-        }, (error) => {
-          console.error("Firestore sync error:", error);
-          addToast('error', 'Fehler bei der Cloud-Synchronisierung.');
-        });
-        return () => unsubscribeDb();
-      } else {
-        signInAnonymously(auth).catch(e => console.warn("Anon auth failed", e));
+    // Auth Initialization ensuring stable rule compliance
+    const initAuth = async () => {
+      if (!auth.currentUser) {
+        await signInAnonymously(auth).catch(e => console.warn("Anon auth failed", e));
       }
+    };
+    initAuth();
+    
+    const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
+      if (!u) return;
+      setUser(u);
+      
+      // SICHERHEITS-FIX: Geteilte Syncs (per Code) in public, eigene in users
+      const syncUid = localStorage.getItem('taskflow_sync_uid');
+      const collectionPath = syncUid 
+        ? `artifacts/taskflow-ultimate/public/data/sync_${syncUid}` 
+        : `artifacts/taskflow-ultimate/users/${u.uid}/tasks`;
+        
+      const tasksRef = collection(db, collectionPath);
+      const q = query(tasksRef);
+      const unsubscribeDb = onSnapshot(q, (snapshot) => {
+        const loadedTasks: Task[] = [];
+        snapshot.forEach((doc) => {
+          loadedTasks.push({ id: doc.id, ...doc.data() } as Task);
+        });
+        setTasks(loadedTasks.sort((a, b) => b.createdAt - a.createdAt));
+      }, (error) => {
+        console.error("Firestore sync error:", error);
+        addToast('error', 'Fehler bei der Cloud-Synchronisierung.');
+      });
+      return () => unsubscribeDb();
     });
 
     return () => unsubscribeAuth();
@@ -304,9 +315,6 @@ export default function App() {
     addToast('info', 'Synchronisiere...');
     
     try {
-      // In a real app, we'd look up the UID associated with this code.
-      // For this demo, we'll assume the code IS the shortened UID.
-      // We'll store the "active sync UID" in localStorage.
       localStorage.setItem('taskflow_sync_uid', syncCodeInput);
       addToast('success', 'Gerät erfolgreich verknüpft! Lade Daten...');
       setTimeout(() => window.location.reload(), 1000);
@@ -326,11 +334,14 @@ export default function App() {
       return [task, ...prev];
     });
 
-    // Firebase Sync
+    // Firebase Sync mit korrigiertem Berechtigungspfad
     if (user && db) {
       try {
-        const syncUid = localStorage.getItem('taskflow_sync_uid') || user.uid;
-        await setDoc(doc(db, `artifacts/taskflow-ultimate/users/${syncUid}/tasks`, task.id), task);
+        const syncUid = localStorage.getItem('taskflow_sync_uid');
+        const collectionPath = syncUid 
+          ? `artifacts/taskflow-ultimate/public/data/sync_${syncUid}` 
+          : `artifacts/taskflow-ultimate/users/${user.uid}/tasks`;
+        await setDoc(doc(db, collectionPath, task.id), task);
       } catch (e) {
         console.error("Firebase save error", e);
       }
@@ -417,8 +428,11 @@ export default function App() {
 
           // Final update to Firebase if IDs changed
           if (user && db) {
-            const syncUid = localStorage.getItem('taskflow_sync_uid') || user.uid;
-            await setDoc(doc(db, `artifacts/taskflow-ultimate/users/${syncUid}/tasks`, task.id), task);
+            const syncUid = localStorage.getItem('taskflow_sync_uid');
+            const collectionPath = syncUid 
+              ? `artifacts/taskflow-ultimate/public/data/sync_${syncUid}` 
+              : `artifacts/taskflow-ultimate/users/${user.uid}/tasks`;
+            await setDoc(doc(db, collectionPath, task.id), task);
           }
         } catch (e) {
           console.error("Google sync error", e);
@@ -431,11 +445,17 @@ export default function App() {
     const task = tasks.find(t => t.id === taskId);
     setTasks(prev => prev.filter(t => t.id !== taskId));
     
+    // Firebase delete mit korrigiertem Pfad
     if (user && db) {
       try {
-        const syncUid = localStorage.getItem('taskflow_sync_uid') || user.uid;
-        await deleteDoc(doc(db, `artifacts/taskflow-ultimate/users/${syncUid}/tasks`, taskId));
-      } catch (e) {}
+        const syncUid = localStorage.getItem('taskflow_sync_uid');
+        const collectionPath = syncUid 
+          ? `artifacts/taskflow-ultimate/public/data/sync_${syncUid}` 
+          : `artifacts/taskflow-ultimate/users/${user.uid}/tasks`;
+        await deleteDoc(doc(db, collectionPath, taskId));
+      } catch (e) {
+        console.error("Firebase delete error", e);
+      }
     }
 
     if (isGoogleLoggedIn && window.gapi && task?.googleTaskId) {
@@ -796,8 +816,21 @@ ${task.subtasks.map(s => `- ${s.title} [${s.isDone ? 'Erledigt' : 'Offen'}] (Not
       cursorY += 7;
     });
     
-    doc.save(`TaskFlow_${task.title.replace(/\s+/g, '_')}.pdf`);
-    addToast('success', 'PDF erfolgreich exportiert.');
+    // SICHERHEITS-FIX: PDF Download mit Fallback für iFrames
+    try {
+      doc.save(`TaskFlow_${task.title.replace(/\s+/g, '_')}.pdf`);
+      addToast('success', 'PDF erfolgreich exportiert.');
+    } catch (e) {
+      console.warn("Direkter Download blockiert, versuche Fallback...", e);
+      try {
+        const blob = doc.output('blob');
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        addToast('success', 'PDF in neuem Tab geöffnet (Download blockiert).');
+      } catch (fallbackError) {
+        addToast('error', 'PDF konnte nicht generiert oder geöffnet werden.');
+      }
+    }
   };
 
   // --- Voice Control ---
@@ -883,10 +916,7 @@ Text: "${transcript}"`,
       addToast('error', `Spracherkennung fehlgeschlagen: ${event.error}`);
     };
 
-    recognition.onend = () => {
-      // Optional: feedback when done
-    };
-
+    recognition.onend = () => {};
     recognition.start();
   };
 
@@ -894,7 +924,6 @@ Text: "${transcript}"`,
   const handleFileUpload = async (file: File, isScanner = false) => {
     if (!file) return;
     
-    // Determine mimeType
     let mimeType = file.type;
     if (!mimeType) {
       if (file.name.endsWith('.pdf')) mimeType = 'application/pdf';
@@ -909,7 +938,6 @@ Text: "${transcript}"`,
        return;
     }
 
-    // Check file size (e.g. max 10MB for base64 inline)
     if (file.size > 10 * 1024 * 1024) {
       addToast('error', 'Die Datei ist zu groß (max. 10MB).');
       return;
@@ -926,7 +954,6 @@ Text: "${transcript}"`,
       const base64 = e.target?.result as string;
       
       if (isScanner) {
-        // Simulate "smoothing" delay
         await new Promise(resolve => setTimeout(resolve, 1200));
         addToast('success', 'Vorlage geglättet und optimiert.');
       }
@@ -1109,7 +1136,6 @@ ${emailContent}
     const today = getTodayString();
     if (filter === 'today') return t.dueDate === today;
     if (filter === 'week') {
-      // Simple week check (within next 7 days)
       const d1 = new Date(today).getTime();
       const d2 = new Date(t.dueDate).getTime();
       return d2 >= d1 && d2 <= d1 + 7 * 24 * 60 * 60 * 1000;
@@ -2060,6 +2086,24 @@ function TaskCard({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
+  // --- NEU: Lokaler State für stabiles Tippen (verhindert 2-Wege-Sync Konflikte) ---
+  const [localTitle, setLocalTitle] = useState(task.title);
+  const [localNotes, setLocalNotes] = useState(task.notes);
+
+  useEffect(() => {
+    setLocalTitle(task.title);
+    setLocalNotes(task.notes);
+  }, [task.title, task.notes]);
+
+  const handleTitleBlur = () => {
+    if (localTitle !== task.title) onSave({ ...task, title: localTitle });
+  };
+
+  const handleNotesBlur = () => {
+    if (localNotes !== task.notes) onSave({ ...task, notes: localNotes });
+  };
+  // ----------------------------------------------------------------------------------
+
   const generateDocument = async (subtask: any) => {
     onAddToast('info', 'KI erstellt Dokument...');
     try {
@@ -2272,7 +2316,6 @@ Antworte AUSSCHLIESSLICH im JSON-Format:
         syncStatus: 'local'
       };
       
-      // Wait a bit to ensure the first save is processed or just call it
       onSave(nextTask);
       onAddToast('success', `Wiederholung erstellt für den ${new Date(nextDate).toLocaleDateString('de-DE')}`);
     }
@@ -2317,6 +2360,7 @@ Antworte AUSSCHLIESSLICH im JSON-Format:
       if (s.id === subtaskId) {
         return {
           ...s,
+          // eslint-disable-next-line
           todos: (s.todos || []).map((t: any) => t.id === todoId ? { ...t, ...updates } : t)
         };
       }
@@ -2330,6 +2374,7 @@ Antworte AUSSCHLIESSLICH im JSON-Format:
       if (s.id === subtaskId) {
         return {
           ...s,
+          // eslint-disable-next-line
           todos: (s.todos || []).filter((t: any) => t.id !== todoId)
         };
       }
@@ -2347,7 +2392,6 @@ Antworte AUSSCHLIESSLICH im JSON-Format:
     const file = e.target.files?.[0];
     if (!file) return;
     
-    // Check file size (e.g. max 10MB)
     if (file.size > 10 * 1024 * 1024) {
       onAddToast('error', 'Die Datei ist zu groß (max. 10MB).');
       return;
@@ -2365,7 +2409,6 @@ Antworte AUSSCHLIESSLICH im JSON-Format:
       const currentFiles = task.attachedFiles || (task.attachedFile ? [task.attachedFile] : []);
       
       if (isScanner && file.type.startsWith('image/')) {
-        // Simulate "smoothing" by applying a slight delay and a success message
         setTimeout(() => {
           onSave({ 
             ...task, 
@@ -2503,8 +2546,9 @@ ${task.meetingResults}
         <div className="flex-1 min-w-0">
           <input 
             type="text"
-            value={task.title}
-            onChange={(e) => onSave({ ...task, title: e.target.value })}
+            value={localTitle}
+            onChange={(e) => setLocalTitle(e.target.value)}
+            onBlur={handleTitleBlur}
             onClick={(e) => e.stopPropagation()}
             className={`w-full bg-transparent border-none p-0 text-lg font-bold focus:ring-0 ${task.isDone ? 'text-slate-500 line-through' : 'text-slate-800'}`}
           />
@@ -2592,8 +2636,9 @@ ${task.meetingResults}
                   </button>
                 </div>
                 <textarea 
-                  value={task.notes}
-                  onChange={(e) => onSave({ ...task, notes: e.target.value })}
+                  value={localNotes}
+                  onChange={(e) => setLocalNotes(e.target.value)}
+                  onBlur={handleNotesBlur}
                   className="w-full p-0 border-none bg-transparent text-sm focus:ring-0 resize-y min-h-[10rem] max-h-[30rem] overflow-y-auto placeholder:text-slate-300"
                   placeholder="Hier kannst du Details, Links oder weitere Infos zur Aufgabe festhalten..."
                 />
